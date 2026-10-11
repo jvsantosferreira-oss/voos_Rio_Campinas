@@ -21,7 +21,6 @@ def send_telegram_message(message: str):
         print(f"Erro ao enviar Telegram: {e}")
 
 def parse_hour(time_str: str) -> int:
-    """Extrai a hora (0-23) de strings de tempo variadas."""
     match = re.search(r'(\d{1,2}):(\d{2})', time_str)
     if match:
         hour = int(match.group(1))
@@ -32,89 +31,103 @@ def parse_hour(time_str: str) -> int:
         return hour
     return -1
 
-async def scrape_google_flights(browser):
-    """Scraper para o Google Flights."""
+async def scrape_google_flights(context):
     print("🔎 Buscando no Google Flights...")
     flights = []
     url = "https://www.google.com/travel/flights?q=Flights%20to%20VCP%20from%20RIO%20on%202027-09-28%20through%202027-09-30&hl=pt-BR&curr=BRL"
-    
-    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
     page = await context.new_page()
     
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(4000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        await page.wait_for_timeout(5000)
         
-        cards = await page.query_selector_all('li.pI13d')
+        # Seleção ampla para evitar falha se o seletor mudar
+        cards = await page.query_selector_all('li[class*="pI13d"], li[class*="gws-flights"]')
         for card in cards[:10]:
-            text = await card.inner_text()
-            times = re.findall(r'\d{1,2}:\d{2}', text)
-            price_match = re.search(r'R\$\s*[\d\.]+', text)
-            
-            if len(times) >= 2 and price_match:
-                dep_hour = parse_hour(times[0])
-                if dep_hour != -1 and dep_hour <= 10:
-                    airline = "Azul/GOL/LATAM"
-                    for name in ["Azul", "GOL", "LATAM"]:
-                        if name in text:
-                            airline = name
-                            break
-                    flights.append({
-                        "source": "Google Flights",
-                        "airline": airline,
-                        "departure": times[0],
-                        "arrival": times[1],
-                        "price": price_match.group(0)
-                    })
+            try:
+                text = await card.inner_text()
+                times = re.findall(r'\d{1,2}:\d{2}', text)
+                price_match = re.search(r'R\$\s*[\d\.]+', text)
+                
+                if len(times) >= 2 and price_match:
+                    dep_hour = parse_hour(times[0])
+                    if dep_hour != -1 and dep_hour <= 10:
+                        airline = "Azul/GOL/LATAM"
+                        for name in ["Azul", "GOL", "LATAM"]:
+                            if name in text:
+                                airline = name
+                                break
+                        flights.append({
+                            "source": "Google Flights",
+                            "airline": airline,
+                            "departure": times[0],
+                            "arrival": times[1],
+                            "price": price_match.group(0)
+                        })
+            except Exception:
+                continue
     except Exception as e:
-        print(f"Erro Google Flights: {e}")
+        print(f"⚠️ Erro ao raspar Google Flights: {e}")
     finally:
-        await context.close()
+        await page.close()
     return flights
 
-async def scrape_kayak(browser):
-    """Scraper para o Kayak."""
+async def scrape_kayak(context):
     print("🔎 Buscando no Kayak...")
     flights = []
     url = "https://www.kayak.com.br/flights/RIO-VCP/2027-09-28/2027-09-30?sort=price_a"
-    
-    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
     page = await context.new_page()
     
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=35000)
-        await page.wait_for_timeout(5000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        await page.wait_for_timeout(6000)
         
-        cards = await page.query_selector_all('div.nAV8')
+        cards = await page.query_selector_all('div[class*="nAV8"], div[class*="resultInner"]')
         for card in cards[:8]:
-            text = await card.inner_text()
-            times = re.findall(r'\d{1,2}:\d{2}', text)
-            price_match = re.search(r'R\$\s*[\d\.]+', text)
-            
-            if len(times) >= 2 and price_match:
-                dep_hour = parse_hour(times[0])
-                if dep_hour != -1 and dep_hour <= 10:
-                    flights.append({
-                        "source": "Kayak",
-                        "airline": "Oferta Kayak",
-                        "departure": times[0],
-                        "arrival": times[1],
-                        "price": price_match.group(0)
-                    })
+            try:
+                text = await card.inner_text()
+                times = re.findall(r'\d{1,2}:\d{2}', text)
+                price_match = re.search(r'R\$\s*[\d\.]+', text)
+                
+                if len(times) >= 2 and price_match:
+                    dep_hour = parse_hour(times[0])
+                    if dep_hour != -1 and dep_hour <= 10:
+                        flights.append({
+                            "source": "Kayak",
+                            "airline": "Oferta Kayak",
+                            "departure": times[0],
+                            "arrival": times[1],
+                            "price": price_match.group(0)
+                        })
+            except Exception:
+                continue
     except Exception as e:
-        print(f"Erro Kayak: {e}")
+        print(f"⚠️ Erro ao raspar Kayak (provável bloqueio anti-bot): {e}")
     finally:
-        await context.close()
+        await page.close()
     return flights
 
 async def main():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # Lança navegador com flags anti-bot para ambientes headless
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled'
+            ]
+        )
         
-        # Executa as raspagens
-        gf_results = await scrape_google_flights(browser)
-        kayak_results = await scrape_kayak(browser)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={'width': 1280, 'height': 800}
+        )
         
+        gf_results = await scrape_google_flights(context)
+        kayak_results = await scrape_kayak(context)
+        
+        await context.close()
         await browser.close()
         
         all_results = gf_results + kayak_results
@@ -132,7 +145,7 @@ async def main():
             
             send_telegram_message(msg)
         else:
-            send_telegram_message("⚠️ Nenhum voo encontrado dentro dos critérios em nenhum dos portais.")
+            send_telegram_message("⚠️ Nenhum voo encontrado nos critérios ou portais indisponíveis no momento.")
 
 if __name__ == "__main__":
     asyncio.run(main())
