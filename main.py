@@ -1,5 +1,6 @@
 import os
 import re
+import traceback
 import asyncio
 import requests
 from playwright.async_api import async_playwright
@@ -21,14 +22,17 @@ def send_telegram_message(message: str):
         print(f"Erro ao enviar Telegram: {e}")
 
 def parse_hour(time_str: str) -> int:
-    match = re.search(r'(\d{1,2}):(\d{2})', time_str)
-    if match:
-        hour = int(match.group(1))
-        if 'PM' in time_str.upper() and hour < 12:
-            hour += 12
-        elif 'AM' in time_str.upper() and hour == 12:
-            hour = 0
-        return hour
+    try:
+        match = re.search(r'(\d{1,2}):(\d{2})', time_str)
+        if match:
+            hour = int(match.group(1))
+            if 'PM' in time_str.upper() and hour < 12:
+                hour += 12
+            elif 'AM' in time_str.upper() and hour == 12:
+                hour = 0
+            return hour
+    except Exception:
+        pass
     return -1
 
 async def scrape_google_flights(context):
@@ -41,111 +45,72 @@ async def scrape_google_flights(context):
         await page.goto(url, wait_until="domcontentloaded", timeout=45000)
         await page.wait_for_timeout(5000)
         
-        # Seleção ampla para evitar falha se o seletor mudar
-        cards = await page.query_selector_all('li[class*="pI13d"], li[class*="gws-flights"]')
-        for card in cards[:10]:
+        cards = await page.query_selector_all('li')
+        for card in cards:
             try:
                 text = await card.inner_text()
-                times = re.findall(r'\d{1,2}:\d{2}', text)
-                price_match = re.search(r'R\$\s*[\d\.]+', text)
-                
-                if len(times) >= 2 and price_match:
-                    dep_hour = parse_hour(times[0])
-                    if dep_hour != -1 and dep_hour <= 10:
-                        airline = "Azul/GOL/LATAM"
-                        for name in ["Azul", "GOL", "LATAM"]:
-                            if name in text:
-                                airline = name
-                                break
-                        flights.append({
-                            "source": "Google Flights",
-                            "airline": airline,
-                            "departure": times[0],
-                            "arrival": times[1],
-                            "price": price_match.group(0)
-                        })
+                if "R$" in text and ":" in text:
+                    times = re.findall(r'\d{1,2}:\d{2}', text)
+                    price_match = re.search(r'R\$\s*[\d\.]+', text)
+                    
+                    if len(times) >= 2 and price_match:
+                        dep_hour = parse_hour(times[0])
+                        if dep_hour != -1 and dep_hour <= 10:
+                            airline = "Azul/GOL/LATAM"
+                            for name in ["Azul", "GOL", "LATAM"]:
+                                if name in text:
+                                    airline = name
+                                    break
+                            flights.append({
+                                "source": "Google Flights",
+                                "airline": airline,
+                                "departure": times[0],
+                                "arrival": times[1],
+                                "price": price_match.group(0)
+                            })
             except Exception:
                 continue
     except Exception as e:
-        print(f"⚠️ Erro ao raspar Google Flights: {e}")
-    finally:
-        await page.close()
-    return flights
-
-async def scrape_kayak(context):
-    print("🔎 Buscando no Kayak...")
-    flights = []
-    url = "https://www.kayak.com.br/flights/RIO-VCP/2027-09-28/2027-09-30?sort=price_a"
-    page = await context.new_page()
-    
-    try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-        await page.wait_for_timeout(6000)
-        
-        cards = await page.query_selector_all('div[class*="nAV8"], div[class*="resultInner"]')
-        for card in cards[:8]:
-            try:
-                text = await card.inner_text()
-                times = re.findall(r'\d{1,2}:\d{2}', text)
-                price_match = re.search(r'R\$\s*[\d\.]+', text)
-                
-                if len(times) >= 2 and price_match:
-                    dep_hour = parse_hour(times[0])
-                    if dep_hour != -1 and dep_hour <= 10:
-                        flights.append({
-                            "source": "Kayak",
-                            "airline": "Oferta Kayak",
-                            "departure": times[0],
-                            "arrival": times[1],
-                            "price": price_match.group(0)
-                        })
-            except Exception:
-                continue
-    except Exception as e:
-        print(f"⚠️ Erro ao raspar Kayak (provável bloqueio anti-bot): {e}")
+        print(f"⚠️ Erro Google Flights: {e}")
     finally:
         await page.close()
     return flights
 
 async def main():
-    async with async_playwright() as p:
-        # Lança navegador com flags anti-bot para ambientes headless
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled'
-            ]
-        )
-        
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={'width': 1280, 'height': 800}
-        )
-        
-        gf_results = await scrape_google_flights(context)
-        kayak_results = await scrape_kayak(context)
-        
-        await context.close()
-        await browser.close()
-        
-        all_results = gf_results + kayak_results
-        
-        if all_results:
-            msg = "✈️ *Monitor de Voos: RJ ➔ Campinas (VCP)*\n"
-            msg += "🗓️ *Ida:* 28/09/2027 (Saída até 10h)\n"
-            msg += "🗓️ *Volta:* 30/09/2027 (Retorno a partir das 19h)\n\n"
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+            )
             
-            for f in all_results:
-                msg += f"📌 *{f['source']}* | Cia: {f['airline']}\n"
-                msg += f"🕒 Saída: {f['departure']} ➔ Chegada: {f['arrival']}\n"
-                msg += f"💰 *Preço:* {f['price']}\n"
-                msg += "-----------------------------------\n"
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                viewport={'width': 1280, 'height': 800}
+            )
             
-            send_telegram_message(msg)
-        else:
-            send_telegram_message("⚠️ Nenhum voo encontrado nos critérios ou portais indisponíveis no momento.")
+            all_results = await scrape_google_flights(context)
+            
+            await context.close()
+            await browser.close()
+            
+            if all_results:
+                msg = "✈️ *Monitor de Voos: RJ ➔ Campinas (VCP)*\n"
+                msg += "🗓️ *Ida:* 28/09/2027 (Saída até 10h)\n"
+                msg += "🗓️ *Volta:* 30/09/2027 (Retorno a partir das 19h)\n\n"
+                for f in all_results:
+                    msg += f"📌 *{f['source']}* | Cia: {f['airline']}\n"
+                    msg += f"🕒 Saída: {f['departure']} ➔ Chegada: {f['arrival']}\n"
+                    msg += f"💰 *Preço:* {f['price']}\n"
+                    msg += "-----------------------------------\n"
+                send_telegram_message(msg)
+            else:
+                send_telegram_message("⚠️ Nenhum voo encontrado nos critérios nesta execução.")
+                
+    except Exception as err:
+        error_msg = f"❌ Erro crítico no script:\n```{traceback.format_exc()[-500:]}```"
+        print(error_msg)
+        send_telegram_message(error_msg)
 
 if __name__ == "__main__":
     asyncio.run(main())
